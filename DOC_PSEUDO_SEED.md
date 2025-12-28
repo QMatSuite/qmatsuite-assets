@@ -103,6 +103,8 @@ QMatSuite can use `pseudo_seed/` in several ways:
 
 ## Manifest and Automation
 
+### Archive Manifest
+
 The `MANIFEST_PSEUDO_SEED.json` file contains:
 - File paths, sizes, and SHA256 checksums for verification
 - Metadata (category, library name, version, flavors)
@@ -115,6 +117,72 @@ python3 scripts/build_manifest_pseudo_seed.py
 ```
 
 The script is deterministic and platform-independent, ensuring consistent manifests across different systems.
+
+### Per-UPF File Index
+
+The `PSEUDO_FILE_INDEX.json` file provides a normalized index of every individual UPF pseudopotential file extracted from all archives. The index uses **SHA256 as the primary key**, allowing one file (same content) to appear in multiple archives with different names.
+
+**Schema (v1.1.0):**
+- `files[]`: Unique file records keyed by SHA256, containing:
+  - `sha256`: Content identity hash
+  - `sha_token`: Normalized content fingerprint (whitespace-removed)
+  - `element`: Element symbol (validated from both filename and UPF header)
+  - `size_bytes`: File size
+  - `upf_format`: "upf1", "upf2", or "unknown"
+  - `basenames[]`: All basenames seen for this file across archives (sorted)
+- `occurrences[]`: One record per (sha256, archive, path) combination, containing:
+  - `sha256`: Reference to file record
+  - `archive`: Archive metadata (name, relative_path, sha256)
+  - `path_in_archive`: Path within the archive
+  - `library`: Library metadata (category, name, version, XC, quality, etc.)
+- `source_manifest`: Reference to the manifest used (path and SHA256)
+
+To regenerate the index, run:
+```bash
+python3 scripts/build_pseudo_file_index.py
+```
+
+This script:
+- **Validates archive SHA256** against `MANIFEST_PSEUDO_SEED.json` before extraction
+- Extracts all archives to `temp/extract/` (gitignored)
+- Validates UPF files (element parsing from both header and filename must match)
+- Creates normalized index with deduplication by content (SHA256)
+- Performs validation checks (all occurrences reference valid files, etc.)
+- Fails with detailed error reports if any validation fails
+
+The index is useful for:
+- Discovering available pseudopotentials by element, library, or functional
+- Detecting duplicate files across archives (same SHA256)
+- Building lookup tables for pseudopotential selection
+- Ensuring reproducibility across installations
+- Understanding which files appear in multiple libraries
+
+**Current Statistics** (as of last generation):
+- 1,523 UPF files scanned across 20 archives
+- 1,016 unique files (by SHA256) - showing 507 duplicate files across archives
+- 2 files have multiple basenames (same content, different names in different archives)
+
+**Example Usage:**
+```python
+import json
+
+# Load the index
+with open('PSEUDO_FILE_INDEX.json') as f:
+    index = json.load(f)
+
+# Find all files for a specific element
+ag_files = [f for f in index['files'] if f['element'] == 'Ag']
+print(f"Found {len(ag_files)} unique Ag pseudopotentials")
+
+# Find all occurrences of a specific file (by SHA256)
+sha256 = "4aa92f22d77ad73be9b30764510837fc49e4479636a796ae1e56aed5a464745f"
+occurrences = [o for o in index['occurrences'] if o['sha256'] == sha256]
+print(f"File appears in {len(occurrences)} archive(s)")
+
+# Find all PBE pseudopotentials
+pbe_files = [o for o in index['occurrences'] if o['library'].get('xc') == 'pbe']
+print(f"Found {len(pbe_files)} PBE pseudopotential occurrences")
+```
 
 ## File Verification
 

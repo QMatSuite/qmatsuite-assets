@@ -42,3 +42,10 @@
 
 # pseudopotential seed directory, too large to commit
 /pseudo_seed/
+
+# Temporary extraction directory
+/temp/
+
+# Python virtual environment
+.venv/
+venv/
