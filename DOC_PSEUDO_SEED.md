@@ -122,10 +122,10 @@ The script is deterministic and platform-independent, ensuring consistent manife
 
 The `PSEUDO_FILE_INDEX.json` file provides a normalized index of every individual UPF pseudopotential file extracted from all archives. The index uses **SHA256 as the primary key**, allowing one file (same content) to appear in multiple archives with different names.
 
-**Schema (v1.1.0):**
+**Schema (v1.2.0):**
 - `files[]`: Unique file records keyed by SHA256, containing:
-  - `sha256`: Content identity hash
-  - `sha_token`: Normalized content fingerprint (whitespace-removed)
+  - `sha256`: Content identity hash (strict bytes hash)
+  - `sha_family`: Physical-family key (SHA256 of whitespace-stripped text)
   - `element`: Element symbol (validated from both filename and UPF header)
   - `size_bytes`: File size
   - `upf_format`: "upf1", "upf2", or "unknown"

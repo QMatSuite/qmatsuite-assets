@@ -7,6 +7,9 @@ This script:
 2. Extracts all archives
 3. Indexes UPF files by sha256 (primary key)
 4. Creates normalized PSEUDO_FILE_INDEX.json with files[] and occurrences[]
+
+Schema v1.2.0: Uses sha_family (whitespace-stripped text hash) instead of sha_token.
+Note: Downstream code in QMatSuite main repo will need to consume sha_family instead of sha_token.
 """
 
 import json
@@ -47,11 +50,21 @@ def sha256_file(filepath: Path) -> str:
     return sha256_hash.hexdigest()
 
 
-def sha_token_bytes(content_bytes: bytes) -> str:
-    """Compute normalized content fingerprint by removing ALL whitespace."""
-    # Remove all whitespace: spaces, tabs, newlines, carriage returns, formfeed, vertical tab
-    normalized = b"".join(content_bytes.split())
-    return hashlib.sha256(normalized).hexdigest()
+def compute_sha_family_from_text(text: str) -> str:
+    """
+    Compute sha_family by stripping all whitespace from text and hashing.
+    
+    Definition: sha_family = sha256(canonical_utf8_bytes) where canonical
+    is the text with all whitespace characters (isspace()) removed.
+    """
+    # Strip all whitespace characters (using isspace() definition)
+    canonical = ''.join(ch for ch in text if not ch.isspace())
+    
+    # Assert: canonical contains zero whitespace characters
+    assert not any(ch.isspace() for ch in canonical), "Canonical string must contain no whitespace"
+    
+    # Compute sha256 of canonical UTF-8 bytes
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def is_archive(filepath: Path) -> bool:
@@ -356,7 +369,25 @@ def main():
             
             # Compute hashes
             sha256 = hashlib.sha256(file_bytes).hexdigest()
-            sha_token = sha_token_bytes(file_bytes)
+            
+            # Decode bytes to text for sha_family computation
+            try:
+                file_text = file_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                # Fallback: decode with error replacement
+                file_text = file_bytes.decode("utf-8", errors="replace")
+            
+            # Validate canonical string is not empty (file contains only whitespace)
+            canonical = ''.join(ch for ch in file_text if not ch.isspace())
+            if not canonical:
+                errors.append(
+                    f"UPF file '{rel_file_path}' in archive '{rel_path}': "
+                    f"File contains only whitespace (invalid/corrupt)"
+                )
+                continue
+            
+            # Compute sha_family
+            sha_family = compute_sha_family_from_text(file_text)
             
             # Parse element from file content
             element_from_file = parse_element_from_upf(file_bytes)
@@ -403,7 +434,7 @@ def main():
             if sha256 not in files_by_sha256:
                 files_by_sha256[sha256] = {
                     "sha256": sha256,
-                    "sha_token": sha_token,
+                    "sha_family": sha_family,
                     "element": element,
                     "size_bytes": len(file_bytes),
                     "upf_format": upf_format,
@@ -451,11 +482,15 @@ def main():
         file_record["basenames"].sort()
     
     # Build final index
-    files_list = sorted(files_by_sha256.values(), key=lambda x: (x["element"], x["sha256"]))
+    # Sort files by (element, first_basename, sha256) for stable ordering
+    files_list = sorted(
+        files_by_sha256.values(),
+        key=lambda x: (x["element"], x["basenames"][0] if x["basenames"] else "", x["sha256"])
+    )
     occurrences_list = sorted(occurrences, key=lambda x: (x["archive"]["name"], x["path_in_archive"], x["sha256"]))
     
     index = {
-        "schema_version": "1.1.0",
+        "schema_version": "1.2.0",
         "generated_at": datetime.utcnow().isoformat() + "Z",
         "source_manifest": {
             "path": "MANIFEST_PSEUDO_SEED.json",
@@ -482,6 +517,16 @@ def main():
     for f in files_list:
         if not f["basenames"]:
             validation_errors.append(f"File with sha256 {f['sha256']} has empty basenames list")
+    
+    # Check: sha_family is valid (64 hex chars, lowercase)
+    for f in files_list:
+        sha_family = f.get("sha_family")
+        if not sha_family:
+            validation_errors.append(f"File with sha256 {f['sha256']} missing sha_family")
+        elif len(sha_family) != 64:
+            validation_errors.append(f"File with sha256 {f['sha256']} has invalid sha_family length: {len(sha_family)} (expected 64)")
+        elif not all(c in '0123456789abcdef' for c in sha_family):
+            validation_errors.append(f"File with sha256 {f['sha256']} has invalid sha_family format (not hex)")
     
     # Check: each archive has at least 1 occurrence
     archives_with_occurrences = {occ["archive"]["name"] for occ in occurrences_list}
