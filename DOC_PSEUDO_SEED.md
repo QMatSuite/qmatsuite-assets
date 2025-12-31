@@ -49,6 +49,13 @@ QMatSuite can use `pseudo_seed/` in several ways:
 - Efficiency table: https://legacy.materialscloud.org/discover/sssp/table/efficiency
 - Precision table: https://legacy.materialscloud.org/discover/sssp/table/precision
 
+**Cutoff Metadata**:
+- Cutoff values are extracted from `SSSP_1.3.0_PBE_efficiency.json` and `SSSP_1.3.0_PBE_precision.json` in `pseudo_seed/` or `pseudo_info/`
+- `cutoff_wfc_normal` and `cutoff_rho_normal` are populated from the JSON files (JSON-only fields)
+- Low and high cutoff hints are set to "na" for SSSP (not available in JSON)
+- `cutoff_wfc_upf` and `cutoff_rho_upf` are extracted from UPF file content if "Suggested cutoff" patterns are found
+- `cutoff_source` format: `"sssp_json:SSSP_1.3.0_PBE_efficiency.json"` (includes exact JSON filename)
+
 ### 2. PseudoDojo
 
 **Purpose**: Comprehensive pseudopotential library with multiple flavors for different use cases, including both norm-conserving (ONCVPSP) and PAW (JTH v1.1) pseudopotentials.
@@ -72,6 +79,18 @@ QMatSuite can use `pseudo_seed/` in several ways:
 **Upstream References**:
 - Main site: https://www.pseudo-dojo.org
 - FAQ: https://www.pseudo-dojo.org/faq.html
+
+**Cutoff Metadata**:
+- Cutoff values are extracted from JSON files in `pseudo_info/` directory
+- Mapping rule: Remove `_upf.{ext}` from archive name to get JSON filename (see `docs/PSEUDODOJO_JSON_MAPPING.md`)
+- PseudoDojo JSON contains `hl`, `hn`, `hh` in Hartree (Ha) units
+- Conversion to Rydberg (Ry): multiply by 2 (1 Ha = 2 Ry)
+- `cutoff_wfc_low = 2 * hl`, `cutoff_wfc_normal = 2 * hn`, `cutoff_wfc_high = 2 * hh` (JSON-only fields)
+- Charge density cutoffs (`cutoff_rho_*`) are set to "na" (not available in PseudoDojo JSON)
+- `cutoff_wfc_upf` and `cutoff_rho_upf` are extracted from UPF file content if "Suggested cutoff" patterns are found
+- `cutoff_source` format: `"pseudodojo_json:nc-sr-04_pbe_standard.json"` (includes exact JSON filename)
+- `cutoff_wfc_upf` and `cutoff_rho_upf` are extracted from UPF file content if "Suggested cutoff" patterns are found
+- `cutoff_source` format: `"pseudodojo_json:nc-sr-04_pbe_standard.json"` (includes exact JSON filename)
 
 ### 3. GIPAW Pseudopotentials (Davide Ceresoli)
 
@@ -122,13 +141,38 @@ The script is deterministic and platform-independent, ensuring consistent manife
 
 The `PSEUDO_FILE_INDEX.json` file provides a normalized index of every individual UPF pseudopotential file extracted from all archives. The index uses **SHA256 as the primary key**, allowing one file (same content) to appear in multiple archives with different names.
 
-**Schema (v1.2.0):**
+**Schema (v1.5.0):**
 - `files[]`: Unique file records keyed by SHA256, containing:
   - `sha256`: Content identity hash (strict bytes hash)
   - `sha_family`: Physical-family key (SHA256 of whitespace-stripped text)
   - `element`: Element symbol (validated from both filename and UPF header)
   - `size_bytes`: File size
   - `upf_format`: "upf1", "upf2", or "unknown"
+  - `pseudo_type`: "nc" | "uspp" | "paw" | "unknown" (pseudopotential type classification)
+  - `relativistic`: "nonrel" | "scalar_rel" | "full_rel" | "unknown" (relativistic treatment)
+  - `has_spin_orbit`: true | false | "unknown" (spin-orbit coupling capability)
+  - `is_ultrasoft`: true | false | "unknown" (explicit ultrasoft flag from UPF)
+  - `is_paw`: true | false | "unknown" (explicit PAW flag from UPF)
+  - `has_gipaw`: true | false | "unknown" (GIPAW capability flag)
+  - `paw_as_gipaw`: true | false | "unknown" (PAW used as GIPAW flag)
+  - `core_correction`: true | false | "unknown" (non-linear core correction / NLCC)
+  - `has_wfc`: true | false | "unknown" (wavefunction coefficients present)
+  - `functional_raw`: Optional string (exact UPF functional string, e.g., "SLA PW PBX PBC")
+  - `functional_norm`: Optional string ("pbe" | "pbesol" | "lda" | "scan" | "unknown")
+  - `z_valence`: Optional float (valence charge)
+  - `number_of_wfc`: Optional int (number of wavefunction coefficients)
+  - `number_of_proj`: Optional int (number of projectors)
+  - `pp_family_hint`: Optional string (e.g., "oncv", "rrkjus", "sg15", "pslibrary", "gipaw")
+  - `cutoff_wfc_low`: number | "na" (low wavefunction cutoff hint in Ry, from JSON only)
+  - `cutoff_wfc_normal`: number | "na" (normal wavefunction cutoff hint in Ry, from JSON only)
+  - `cutoff_wfc_high`: number | "na" (high wavefunction cutoff hint in Ry, from JSON only)
+  - `cutoff_rho_low`: number | "na" (low charge density cutoff hint in Ry, from JSON only)
+  - `cutoff_rho_normal`: number | "na" (normal charge density cutoff hint in Ry, from JSON only)
+  - `cutoff_rho_high`: number | "na" (high charge density cutoff hint in Ry, from JSON only)
+  - `cutoff_wfc_upf`: number | "na" (wavefunction cutoff from UPF file parsing, if available)
+  - `cutoff_rho_upf`: number | "na" (charge density cutoff from UPF file parsing, if available)
+  - `cutoff_source`: string | null (source of JSON cutoff data, format: "sssp_json:filename.json" or "pseudodojo_json:filename.json")
+  - `metadata_source`: Object indicating source of classification metadata (type_from, relativistic_from, functional_from, z_valence_from, etc.)
   - `basenames[]`: All basenames seen for this file across archives (sorted)
 - `occurrences[]`: One record per (sha256, archive, path) combination, containing:
   - `sha256`: Reference to file record

@@ -216,6 +216,494 @@ def detect_upf_format(content_bytes: bytes) -> str:
         return "unknown"
 
 
+def extract_upf_metadata(content_bytes: bytes, filename: str) -> Dict:
+    """
+    Extract comprehensive UPF metadata from content.
+    Returns dict with all metadata fields (type, relativistic, functional, cutoffs, etc.)
+    """
+    try:
+        content = content_bytes.decode("utf-8", errors="ignore")
+    except Exception:
+        return _default_metadata()
+    
+    result = _default_metadata()
+    
+    # UPF v2: Parse PP_HEADER attributes (most reliable)
+    header_match = re.search(r'<PP_HEADER[^>]*>', content, re.IGNORECASE)
+    if header_match:
+        header_line = header_match.group(0)
+        
+        # Extract all attributes
+        attrs = {}
+        attr_names = [
+            "is_ultrasoft", "is_paw", "pseudo_type", "relativistic", "has_so",
+            "has_gipaw", "paw_as_gipaw", "core_correction", "functional",
+            "z_valence", "number_of_wfc", "number_of_proj", "has_wfc"
+        ]
+        for attr in attr_names:
+            match = re.search(rf'\b{attr}\s*=\s*["\']([^"\']+)["\']', header_line, re.IGNORECASE)
+            if match:
+                attrs[attr] = match.group(1).strip()
+        
+        # Type classification
+        if attrs.get("pseudo_type"):
+            pt = attrs["pseudo_type"].upper()
+            if pt in ["NC", "NORM-CONSERVING"]:
+                result["pseudo_type"] = "nc"
+                result["metadata_source"]["type_from"] = "upf_v2_attr"
+            elif pt in ["US", "ULTRASOFT"]:
+                result["pseudo_type"] = "uspp"
+                result["metadata_source"]["type_from"] = "upf_v2_attr"
+            elif pt == "PAW":
+                result["pseudo_type"] = "paw"
+                result["metadata_source"]["type_from"] = "upf_v2_attr"
+        elif attrs.get("is_paw", "").upper() == "T":
+            result["pseudo_type"] = "paw"
+            result["is_paw"] = True
+            result["metadata_source"]["type_from"] = "upf_v2_attr"
+        elif attrs.get("is_ultrasoft", "").upper() == "T":
+            result["pseudo_type"] = "uspp"
+            result["is_ultrasoft"] = True
+            result["metadata_source"]["type_from"] = "upf_v2_attr"
+        elif attrs.get("is_ultrasoft", "").upper() == "F" and attrs.get("is_paw", "").upper() == "F":
+            result["pseudo_type"] = "nc"
+            result["is_ultrasoft"] = False
+            result["is_paw"] = False
+            result["metadata_source"]["type_from"] = "upf_v2_attr"
+        
+        # Boolean flags from v2
+        if attrs.get("is_ultrasoft"):
+            result["is_ultrasoft"] = attrs["is_ultrasoft"].upper() == "T"
+        if attrs.get("is_paw"):
+            result["is_paw"] = attrs["is_paw"].upper() == "T"
+        if attrs.get("has_so"):
+            result["has_spin_orbit"] = attrs["has_so"].upper() == "T"
+        if attrs.get("has_gipaw"):
+            val = attrs["has_gipaw"].upper()
+            result["has_gipaw"] = True if val == "T" else False if val == "F" else "unknown"
+        if attrs.get("paw_as_gipaw"):
+            val = attrs["paw_as_gipaw"].upper()
+            result["paw_as_gipaw"] = True if val == "T" else False if val == "F" else "unknown"
+        if attrs.get("core_correction"):
+            val = attrs["core_correction"].upper()
+            result["core_correction"] = True if val == "T" else False if val == "F" else "unknown"
+        if attrs.get("has_wfc"):
+            val = attrs["has_wfc"].upper()
+            result["has_wfc"] = True if val == "T" else False if val == "F" else "unknown"
+        
+        # Relativistic
+        if attrs.get("relativistic"):
+            rel = attrs["relativistic"].lower()
+            if "scalar" in rel:
+                result["relativistic"] = "scalar_rel"
+                result["metadata_source"]["relativistic_from"] = "upf_v2_attr"
+            elif "full" in rel or "dirac" in rel:
+                result["relativistic"] = "full_rel"
+                result["metadata_source"]["relativistic_from"] = "upf_v2_attr"
+            elif "non" in rel or "no" in rel:
+                result["relativistic"] = "nonrel"
+                result["metadata_source"]["relativistic_from"] = "upf_v2_attr"
+        
+        # Functional
+        if attrs.get("functional"):
+            result["functional_raw"] = attrs["functional"].strip()
+            result["functional_norm"] = _normalize_functional(result["functional_raw"])
+            result["metadata_source"]["functional_from"] = "upf_v2_attr"
+        
+        # Z valence
+        if attrs.get("z_valence"):
+            try:
+                result["z_valence"] = float(attrs["z_valence"])
+                result["metadata_source"]["z_valence_from"] = "upf_v2_attr"
+            except (ValueError, TypeError):
+                pass
+        
+        # Counts
+        if attrs.get("number_of_wfc"):
+            try:
+                result["number_of_wfc"] = int(float(attrs["number_of_wfc"]))
+                result["metadata_source"]["number_of_wfc_from"] = "upf_v2_attr"
+            except (ValueError, TypeError):
+                pass
+        if attrs.get("number_of_proj"):
+            try:
+                result["number_of_proj"] = int(float(attrs["number_of_proj"]))
+                result["metadata_source"]["number_of_proj_from"] = "upf_v2_attr"
+            except (ValueError, TypeError):
+                pass
+    
+    # UPF v1: Parse from text blocks
+    if result["pseudo_type"] == "unknown" or result["functional_raw"] is None:
+        _extract_from_upf_v1(content, result, filename)
+    
+    # Extract cutoffs from UPF (if not already from SSSP)
+    _extract_cutoffs_from_upf(content, result)
+    
+    return result
+
+
+def _default_metadata() -> Dict:
+    """Return default metadata structure."""
+    return {
+        "pseudo_type": "unknown",
+        "pp_family_hint": None,
+        "relativistic": "unknown",
+        "has_spin_orbit": "unknown",
+        "is_ultrasoft": "unknown",
+        "is_paw": "unknown",
+        "has_gipaw": "unknown",
+        "paw_as_gipaw": "unknown",
+        "core_correction": "unknown",
+        "has_wfc": "unknown",
+        "functional_raw": None,
+        "functional_norm": None,
+        "z_valence": None,
+        "number_of_wfc": None,
+        "number_of_proj": None,
+        "cutoff_source": None,
+        "cutoff_wfc_low": "na",
+        "cutoff_wfc_normal": "na",
+        "cutoff_wfc_high": "na",
+        "cutoff_rho_low": "na",
+        "cutoff_rho_normal": "na",
+        "cutoff_rho_high": "na",
+        "cutoff_wfc_upf": "na",
+        "cutoff_rho_upf": "na",
+        "metadata_source": {
+            "type_from": "unknown",
+            "relativistic_from": "unknown",
+            "so_from": "unknown",
+            "functional_from": "unknown",
+            "z_valence_from": "unknown"
+        }
+    }
+
+
+def _normalize_functional(raw: str) -> str:
+    """Normalize functional string to standard label."""
+    if not raw:
+        return None
+    
+    raw_upper = raw.upper()
+    
+    # Check for PBE
+    if "PBX" in raw_upper and "PBC" in raw_upper:
+        return "pbe"
+    if "PBE" in raw_upper and "PBESOL" not in raw_upper:
+        return "pbe"
+    
+    # Check for PBEsol
+    if "PBESOL" in raw_upper:
+        return "pbesol"
+    
+    # Check for SCAN
+    if "SCAN" in raw_upper:
+        return "scan"
+    
+    # Check for LDA (SLA PW without other functionals)
+    if "SLA" in raw_upper and "PW" in raw_upper:
+        if not any(x in raw_upper for x in ["PBX", "PBC", "SCAN", "PBE", "PBESOL"]):
+            return "lda"
+    
+    return "unknown"
+
+
+def _extract_from_upf_v1(content: str, result: Dict, filename: str) -> None:
+    """Extract metadata from UPF v1 text blocks."""
+    # PP_INFO block
+    info_match = re.search(r'<PP_INFO>(.*?)</PP_INFO>', content, re.DOTALL | re.IGNORECASE)
+    if info_match:
+        info_text = info_match.group(1)
+        info_lower = info_text.lower()
+        
+        # Type from PP_INFO
+        if result["pseudo_type"] == "unknown":
+            if "ultrasoft" in info_lower or "vanderbilt" in info_lower:
+                if "paw" in info_lower and ("projector" in info_lower or "augmented" in info_lower):
+                    result["pseudo_type"] = "paw"
+                    result["metadata_source"]["type_from"] = "upf_v1_info"
+                elif "ultrasoft" in info_lower:
+                    result["pseudo_type"] = "uspp"
+                    result["metadata_source"]["type_from"] = "upf_v1_info"
+                elif "vanderbilt" in info_lower:
+                    result["pseudo_type"] = "uspp"
+                    result["metadata_source"]["type_from"] = "upf_v1_info"
+            elif "oncv" in info_lower or "norm-conserving" in info_lower or "norm conserving" in info_lower:
+                result["pseudo_type"] = "nc"
+                result["metadata_source"]["type_from"] = "upf_v1_info"
+            elif "paw" in info_lower and ("projector" in info_lower or "augmented" in info_lower):
+                result["pseudo_type"] = "paw"
+                result["metadata_source"]["type_from"] = "upf_v1_info"
+            elif "atomic" in info_lower and "dal corso" in info_lower:
+                if "gipaw" in filename.lower():
+                    result["pseudo_type"] = "uspp"
+                    result["pp_family_hint"] = "gipaw"
+                    result["metadata_source"]["type_from"] = "upf_v1_info_filename"
+                elif "paw" in filename.lower():
+                    result["pseudo_type"] = "paw"
+                    result["metadata_source"]["type_from"] = "upf_v1_info_filename"
+        
+        # Relativistic from PP_INFO
+        if result["relativistic"] == "unknown":
+            if "scalar-relativistic" in info_lower or "scalar relativistic" in info_lower:
+                result["relativistic"] = "scalar_rel"
+                result["metadata_source"]["relativistic_from"] = "upf_v1_info"
+            elif "full-relativistic" in info_lower or "full relativistic" in info_lower or "dirac" in info_lower:
+                result["relativistic"] = "full_rel"
+                result["metadata_source"]["relativistic_from"] = "upf_v1_info"
+            elif "non-relativistic" in info_lower or "non relativistic" in info_lower:
+                result["relativistic"] = "nonrel"
+                result["metadata_source"]["relativistic_from"] = "upf_v1_info"
+        
+        # Functional from PP_INFO
+        if result["functional_raw"] is None:
+            # Look for "Exchange-Correlation functional" line
+            func_match = re.search(
+                r'Exchange-Correlation\s+functional[:\s]*\n?\s*([A-Z\s]+)',
+                info_text,
+                re.IGNORECASE | re.MULTILINE
+            )
+            if func_match:
+                func_raw = func_match.group(1).strip()
+                # Clean up whitespace
+                func_raw = ' '.join(func_raw.split())
+                if func_raw:
+                    result["functional_raw"] = func_raw
+                    result["functional_norm"] = _normalize_functional(func_raw)
+                    result["metadata_source"]["functional_from"] = "upf_v1_info"
+        
+        # Z valence from PP_INFO
+        if result["z_valence"] is None:
+            z_match = re.search(r'Z\s+valence[:\s]*(\d+\.?\d*)', info_text, re.IGNORECASE)
+            if z_match:
+                try:
+                    result["z_valence"] = float(z_match.group(1))
+                    result["metadata_source"]["z_valence_from"] = "upf_v1_info"
+                except (ValueError, TypeError):
+                    pass
+    
+    # PP_HEADER text block (v1 style)
+    header_block_match = re.search(r'<PP_HEADER[^>]*>(.*?)</PP_HEADER>', content, re.DOTALL | re.IGNORECASE)
+    if header_block_match and result["pseudo_type"] == "unknown":
+        header_text = header_block_match.group(1)
+        header_lower = header_text.lower()
+        
+        # Try to extract type from header text
+        if "nc" in header_lower and "norm" in header_lower:
+            result["pseudo_type"] = "nc"
+            result["metadata_source"]["type_from"] = "upf_v1_header"
+        elif "us" in header_lower and "ultrasoft" in header_lower:
+            result["pseudo_type"] = "uspp"
+            result["metadata_source"]["type_from"] = "upf_v1_header"
+        elif "paw" in header_lower:
+            result["pseudo_type"] = "paw"
+            result["metadata_source"]["type_from"] = "upf_v1_header"
+    
+    # Filename heuristics (only if still unknown)
+    if result["pseudo_type"] == "unknown":
+        filename_lower = filename.lower()
+        if "oncv" in filename_lower or "oncvpsp" in filename_lower:
+            result["pp_family_hint"] = "oncv"
+            result["pseudo_type"] = "nc"
+            result["metadata_source"]["type_from"] = "filename"
+        elif "rrkjus" in filename_lower:
+            result["pp_family_hint"] = "rrkjus"
+            result["pseudo_type"] = "uspp"
+            result["metadata_source"]["type_from"] = "filename"
+        elif "uspp" in filename_lower or ".us." in filename_lower:
+            result["pseudo_type"] = "uspp"
+            result["metadata_source"]["type_from"] = "filename"
+        elif "paw" in filename_lower and ".paw." in filename_lower:
+            result["pseudo_type"] = "paw"
+            result["metadata_source"]["type_from"] = "filename"
+        elif "sg15" in filename_lower:
+            result["pp_family_hint"] = "sg15"
+            result["pseudo_type"] = "nc"
+            result["metadata_source"]["type_from"] = "filename"
+        elif "psl" in filename_lower or "pslibrary" in filename_lower:
+            if "paw" in filename_lower:
+                result["pp_family_hint"] = "pslibrary"
+                result["pseudo_type"] = "paw"
+                result["metadata_source"]["type_from"] = "filename"
+            elif ".us." in filename_lower:
+                result["pp_family_hint"] = "pslibrary"
+                result["pseudo_type"] = "uspp"
+                result["metadata_source"]["type_from"] = "filename"
+    
+    # Relativistic from filename (if not from UPF)
+    if result["relativistic"] == "unknown":
+        filename_lower = filename.lower()
+        if "fr" in filename_lower or "full" in filename_lower:
+            result["relativistic"] = "full_rel"
+            result["metadata_source"]["relativistic_from"] = "filename"
+        elif "sr" in filename_lower or "scalar" in filename_lower:
+            result["relativistic"] = "scalar_rel"
+            result["metadata_source"]["relativistic_from"] = "filename"
+
+
+def _extract_cutoffs_from_upf(content: str, result: Dict) -> None:
+    """Extract suggested cutoffs from UPF content and store in cutoff_wfc_upf/cutoff_rho_upf."""
+    # Look for suggested cutoff patterns in PP_INFO
+    # Pattern: "Suggested minimum cutoff for wavefunctions:  48. Ry"
+    wfc_match = re.search(
+        r'Suggested\s+(?:minimum\s+)?cutoff\s+for\s+wavefunctions?[:\s]+(\d+\.?\d*)\s*Ry',
+        content,
+        re.IGNORECASE
+    )
+    if wfc_match:
+        try:
+            result["cutoff_wfc_upf"] = float(wfc_match.group(1))
+        except (ValueError, TypeError):
+            pass
+    
+    # Pattern: "Suggested minimum cutoff for charge density: 328. Ry"
+    rho_match = re.search(
+        r'Suggested\s+(?:minimum\s+)?cutoff\s+for\s+charge\s+density[:\s]+(\d+\.?\d*)\s*Ry',
+        content,
+        re.IGNORECASE
+    )
+    if rho_match:
+        try:
+            result["cutoff_rho_upf"] = float(rho_match.group(1))
+        except (ValueError, TypeError):
+            pass
+    
+    # Alternative pattern: "Suggested cutoff for wfc and rho: 48 328"
+    combined_match = re.search(
+        r'Suggested\s+cutoff\s+for\s+wfc\s+and\s+rho[:\s]+(\d+\.?\d*)\s+(\d+\.?\d*)',
+        content,
+        re.IGNORECASE
+    )
+    if combined_match:
+        try:
+            if result.get("cutoff_wfc_upf") == "na" or result.get("cutoff_wfc_upf") is None:
+                result["cutoff_wfc_upf"] = float(combined_match.group(1))
+            if result.get("cutoff_rho_upf") == "na" or result.get("cutoff_rho_upf") is None:
+                result["cutoff_rho_upf"] = float(combined_match.group(2))
+        except (ValueError, TypeError):
+            pass
+
+
+def classify_pseudo_type_from_upf(content_bytes: bytes, filename: str) -> Dict:
+    """
+    Legacy function - now calls extract_upf_metadata for backward compatibility.
+    """
+    metadata = extract_upf_metadata(content_bytes, filename)
+    # Return in old format for compatibility
+    return {
+        "pseudo_type": metadata["pseudo_type"],
+        "pp_family_hint": metadata["pp_family_hint"],
+        "relativistic": metadata["relativistic"],
+        "has_spin_orbit": metadata["has_spin_orbit"],
+        "metadata_source": metadata["metadata_source"]
+    }
+
+
+def extract_cutoffs_from_sssp_json(sssp_json_path: Path, filename: str) -> Optional[Dict]:
+    """Extract cutoffs from SSSP JSON metadata if available."""
+    try:
+        with open(sssp_json_path) as f:
+            sssp_data = json.load(f)
+        
+        # Find entry by filename
+        for element, metadata in sssp_data.items():
+            if metadata.get("filename") == filename:
+                json_name = sssp_json_path.name
+                return {
+                    "cutoff_wfc_normal": metadata.get("cutoff_wfc"),
+                    "cutoff_rho_normal": metadata.get("cutoff_rho"),
+                    "cutoff_wfc_low": "na",
+                    "cutoff_wfc_high": "na",
+                    "cutoff_rho_low": "na",
+                    "cutoff_rho_high": "na",
+                    "cutoff_source": f"sssp_json:{json_name}"
+                }
+    except Exception:
+        pass
+    
+    return None
+
+
+def extract_cutoffs_from_pseudodojo_json(pseudodojo_json_path: Path, element: str) -> Optional[Dict]:
+    """
+    Extract cutoffs from PseudoDojo JSON metadata if available.
+    
+    PseudoDojo JSON contains hl, hn, hh in Ha units.
+    Convert to Ry by multiplying by 2.
+    """
+    try:
+        with open(pseudodojo_json_path) as f:
+            dojo_data = json.load(f)
+        
+        # Find entry by element symbol
+        # Handle special cases like "H_r", "He_r" for full-relativistic
+        element_data = None
+        if element in dojo_data:
+            element_data = dojo_data[element]
+        else:
+            # Try with _r suffix for full-relativistic
+            element_r = f"{element}_r"
+            if element_r in dojo_data:
+                element_data = dojo_data[element_r]
+        
+        if element_data:
+            hl = element_data.get("hl")
+            hn = element_data.get("hn")
+            hh = element_data.get("hh")
+            
+            json_name = pseudodojo_json_path.name
+            result = {
+                "cutoff_wfc_low": "na",
+                "cutoff_wfc_normal": "na",
+                "cutoff_wfc_high": "na",
+                "cutoff_rho_low": "na",
+                "cutoff_rho_normal": "na",
+                "cutoff_rho_high": "na",
+                "cutoff_source": f"pseudodojo_json:{json_name}"
+            }
+            
+            # Convert from Ha to Ry (multiply by 2)
+            if hl is not None and hl != "na":
+                try:
+                    result["cutoff_wfc_low"] = float(hl) * 2.0
+                except (ValueError, TypeError):
+                    pass
+            
+            if hn is not None and hn != "na":
+                try:
+                    result["cutoff_wfc_normal"] = float(hn) * 2.0
+                except (ValueError, TypeError):
+                    pass
+            
+            if hh is not None and hh != "na":
+                try:
+                    result["cutoff_wfc_high"] = float(hh) * 2.0
+                except (ValueError, TypeError):
+                    pass
+            
+            return result
+    except Exception:
+        pass
+    
+    return None
+
+
+def find_pseudodojo_json_for_archive(archive_name: str, pseudo_info_dir: Path) -> Optional[Path]:
+    """
+    Find the corresponding PseudoDojo JSON file for an archive.
+    
+    Rule: Remove _upf.{ext} from archive name to get JSON name.
+    """
+    # Remove _upf.tgz or _upf.tar
+    json_name = archive_name.replace("_upf.tgz", ".json").replace("_upf.tar", ".json")
+    json_path = pseudo_info_dir / json_name
+    
+    if json_path.exists():
+        return json_path
+    
+    return None
+
+
 def extract_archive(archive_path: Path, extract_dir: Path) -> Path:
     """Extract archive to extract_dir/<archive_stem>/ and return extraction root."""
     extract_root = extract_dir / archive_path.stem
@@ -282,6 +770,10 @@ def main():
     occurrences: List[Dict] = []  # List of occurrence records
     warnings: List[str] = []
     errors: List[str] = []
+    
+    # Classification tracking for report
+    unknown_types: List[Dict] = []  # Files with unknown pseudo_type
+    ambiguous_cases: List[Dict] = []  # Files with conflicting type indicators
     
     # Process each archive entry in manifest
     archive_count = 0
@@ -430,16 +922,99 @@ def main():
             # Detect UPF format
             upf_format = detect_upf_format(file_bytes)
             
+            # Extract comprehensive UPF metadata
+            metadata = extract_upf_metadata(file_bytes, filepath.name)
+            
+            # Extract cutoffs from SSSP JSON if available (overrides UPF if present)
+            if manifest_entry.get("category") == "sssp":
+                quality = manifest_entry.get("quality")
+                if quality:
+                    sssp_json_name = f"SSSP_1.3.0_PBE_{quality}.json"
+                    # Try pseudo_info first, then pseudo_seed
+                    sssp_json_path = repo_root / "pseudo_info" / sssp_json_name
+                    if not sssp_json_path.exists():
+                        sssp_json_path = pseudo_seed_dir / sssp_json_name
+                    if sssp_json_path.exists():
+                        cutoff_data = extract_cutoffs_from_sssp_json(sssp_json_path, filepath.name)
+                        if cutoff_data:
+                            metadata["cutoff_source"] = cutoff_data.get("cutoff_source")
+                            # Set the 6 cutoff fields
+                            metadata["cutoff_wfc_low"] = cutoff_data.get("cutoff_wfc_low", "na")
+                            metadata["cutoff_wfc_normal"] = cutoff_data.get("cutoff_wfc_normal", "na")
+                            metadata["cutoff_wfc_high"] = cutoff_data.get("cutoff_wfc_high", "na")
+                            metadata["cutoff_rho_low"] = cutoff_data.get("cutoff_rho_low", "na")
+                            metadata["cutoff_rho_normal"] = cutoff_data.get("cutoff_rho_normal", "na")
+                            metadata["cutoff_rho_high"] = cutoff_data.get("cutoff_rho_high", "na")
+            
+            # Extract cutoffs from PseudoDojo JSON if available
+            if manifest_entry.get("category") == "pseudo-dojo":
+                archive_name = Path(manifest_entry["relative_path"]).name
+                pseudo_info_dir = repo_root / "pseudo_info"
+                dojo_json_path = find_pseudodojo_json_for_archive(archive_name, pseudo_info_dir)
+                if dojo_json_path and dojo_json_path.exists():
+                    cutoff_data = extract_cutoffs_from_pseudodojo_json(dojo_json_path, element)
+                    if cutoff_data:
+                        # Update the 6 cutoff fields
+                        metadata["cutoff_wfc_low"] = cutoff_data.get("cutoff_wfc_low", "na")
+                        metadata["cutoff_wfc_normal"] = cutoff_data.get("cutoff_wfc_normal", "na")
+                        metadata["cutoff_wfc_high"] = cutoff_data.get("cutoff_wfc_high", "na")
+                        metadata["cutoff_rho_low"] = cutoff_data.get("cutoff_rho_low", "na")
+                        metadata["cutoff_rho_normal"] = cutoff_data.get("cutoff_rho_normal", "na")
+                        metadata["cutoff_rho_high"] = cutoff_data.get("cutoff_rho_high", "na")
+                        metadata["cutoff_source"] = cutoff_data.get("cutoff_source")
+            
             # Add or update file record
             if sha256 not in files_by_sha256:
-                files_by_sha256[sha256] = {
+                file_record = {
                     "sha256": sha256,
                     "sha_family": sha_family,
                     "element": element,
                     "size_bytes": len(file_bytes),
                     "upf_format": upf_format,
+                    "pseudo_type": metadata["pseudo_type"],
+                    "relativistic": metadata["relativistic"],
+                    "has_spin_orbit": metadata["has_spin_orbit"],
+                    "is_ultrasoft": metadata["is_ultrasoft"],
+                    "is_paw": metadata["is_paw"],
+                    "has_gipaw": metadata["has_gipaw"],
+                    "paw_as_gipaw": metadata["paw_as_gipaw"],
+                    "core_correction": metadata["core_correction"],
+                    "has_wfc": metadata["has_wfc"],
+                    "functional_raw": metadata["functional_raw"],
+                    "functional_norm": metadata["functional_norm"],
+                    "z_valence": metadata["z_valence"],
+                    "number_of_wfc": metadata["number_of_wfc"],
+                    "number_of_proj": metadata["number_of_proj"],
+                    "cutoff_source": metadata["cutoff_source"],
+                    "cutoff_wfc_low": metadata["cutoff_wfc_low"],
+                    "cutoff_wfc_normal": metadata["cutoff_wfc_normal"],
+                    "cutoff_wfc_high": metadata["cutoff_wfc_high"],
+                    "cutoff_rho_low": metadata["cutoff_rho_low"],
+                    "cutoff_rho_normal": metadata["cutoff_rho_normal"],
+                    "cutoff_rho_high": metadata["cutoff_rho_high"],
+                    "cutoff_wfc_upf": metadata["cutoff_wfc_upf"],
+                    "cutoff_rho_upf": metadata["cutoff_rho_upf"],
                     "basenames": []
                 }
+                
+                # Add optional fields
+                if metadata["pp_family_hint"]:
+                    file_record["pp_family_hint"] = metadata["pp_family_hint"]
+                
+                file_record["metadata_source"] = metadata["metadata_source"]
+                
+                files_by_sha256[sha256] = file_record
+                
+                # Track unknown types for report
+                if metadata["pseudo_type"] == "unknown":
+                    unknown_types.append({
+                        "sha256": sha256,
+                        "basename": filepath.name,
+                        "archive": rel_path,
+                        "path_in_archive": str(rel_file_path),
+                        "upf_format": upf_format,
+                        "header_snippet": file_text[:500] if len(file_text) > 500 else file_text
+                    })
             
             # Add basename if not already present
             basename = filepath.name
@@ -490,7 +1065,7 @@ def main():
     occurrences_list = sorted(occurrences, key=lambda x: (x["archive"]["name"], x["path_in_archive"], x["sha256"]))
     
     index = {
-        "schema_version": "1.2.0",
+        "schema_version": "1.5.0",
         "generated_at": datetime.utcnow().isoformat() + "Z",
         "source_manifest": {
             "path": "MANIFEST_PSEUDO_SEED.json",
@@ -551,6 +1126,86 @@ def main():
     with open(output_path, "w") as f:
         json.dump(index, f, indent=2, sort_keys=False)
     
+    # Generate classification report
+    report_path = repo_root / "docs" / "PSEUDO_CLASSIFICATION_REPORT.md"
+    report_path.parent.mkdir(exist_ok=True)
+    
+    # Statistics
+    type_counts = defaultdict(int)
+    rel_counts = defaultdict(int)
+    functional_norm_counts = defaultdict(int)
+    has_gipaw_counts = defaultdict(int)
+    z_valence_present = 0
+    functional_raw_present = 0
+    cutoff_wfc_normal_present = 0
+    cutoff_rho_normal_present = 0
+    
+    for f in files_list:
+        type_counts[f.get("pseudo_type", "unknown")] += 1
+        rel_counts[f.get("relativistic", "unknown")] += 1
+        if f.get("functional_norm"):
+            functional_norm_counts[f.get("functional_norm")] += 1
+        if f.get("has_gipaw") != "unknown":
+            has_gipaw_counts[str(f.get("has_gipaw"))] += 1
+        if f.get("z_valence") is not None:
+            z_valence_present += 1
+        if f.get("functional_raw") is not None:
+            functional_raw_present += 1
+        if f.get("cutoff_wfc_normal") != "na" and f.get("cutoff_wfc_normal") is not None:
+            cutoff_wfc_normal_present += 1
+        if f.get("cutoff_rho_normal") != "na" and f.get("cutoff_rho_normal") is not None:
+            cutoff_rho_normal_present += 1
+    
+    with open(report_path, "w") as f:
+        f.write("# Pseudopotential Classification Report\n\n")
+        f.write(f"Generated: {datetime.utcnow().isoformat()}Z\n\n")
+        f.write("## Summary\n\n")
+        f.write(f"- Total unique files: {len(files_list)}\n")
+        f.write(f"- Total occurrences: {len(occurrences_list)}\n\n")
+        
+        f.write("## Pseudopotential Type Distribution\n\n")
+        for ptype, count in sorted(type_counts.items()):
+            f.write(f"- **{ptype.upper()}**: {count} files\n")
+        
+        f.write("\n## Relativistic Treatment Distribution\n\n")
+        for rel, count in sorted(rel_counts.items()):
+            f.write(f"- **{rel}**: {count} files\n")
+        
+        f.write("\n## Functional Distribution\n\n")
+        f.write(f"- Files with functional_raw: {functional_raw_present} / {len(files_list)}\n")
+        if functional_norm_counts:
+            for func, count in sorted(functional_norm_counts.items()):
+                f.write(f"- **{func}**: {count} files\n")
+        
+        f.write("\n## Metadata Coverage\n\n")
+        f.write(f"- Z valence present: {z_valence_present} / {len(files_list)} ({100*z_valence_present/len(files_list):.1f}%)\n")
+        f.write(f"- Functional raw present: {functional_raw_present} / {len(files_list)} ({100*functional_raw_present/len(files_list):.1f}%)\n")
+        f.write(f"- Cutoff WFC normal present: {cutoff_wfc_normal_present} / {len(files_list)} ({100*cutoff_wfc_normal_present/len(files_list):.1f}%)\n")
+        f.write(f"- Cutoff rho normal present: {cutoff_rho_normal_present} / {len(files_list)} ({100*cutoff_rho_normal_present/len(files_list):.1f}%)\n")
+        f.write(f"- Has GIPAW flag: {sum(has_gipaw_counts.values())} / {len(files_list)} ({100*sum(has_gipaw_counts.values())/len(files_list):.1f}%)\n")
+        
+        f.write("\n## Unknown Type Cases\n\n")
+        if unknown_types:
+            f.write(f"Found {len(unknown_types)} files with unknown pseudo_type:\n\n")
+            for case in unknown_types[:20]:  # Limit to first 20
+                f.write(f"### {case['basename']}\n\n")
+                f.write(f"- Archive: `{case['archive']}`\n")
+                f.write(f"- Path: `{case['path_in_archive']}`\n")
+                f.write(f"- UPF Format: {case['upf_format']}\n")
+                f.write(f"- Header snippet:\n```\n{case['header_snippet'][:300]}...\n```\n\n")
+            if len(unknown_types) > 20:
+                f.write(f"\n... and {len(unknown_types) - 20} more unknown cases.\n\n")
+        else:
+            f.write("✅ All files successfully classified!\n\n")
+        
+        f.write("## Ambiguous Cases\n\n")
+        if ambiguous_cases:
+            f.write(f"Found {len(ambiguous_cases)} files with conflicting type indicators:\n\n")
+            for case in ambiguous_cases:
+                f.write(f"- {case['basename']}: {case['conflict']}\n")
+        else:
+            f.write("✅ No ambiguous cases found.\n\n")
+    
     # Print summary
     print("=" * 80)
     print("SUCCESS")
@@ -560,7 +1215,9 @@ def main():
     print(f"Unique sha256 files:    {len(files_list)}")
     print(f"Occurrences:            {len(occurrences_list)}")
     print(f"Warnings:               {len(warnings)}")
+    print(f"Unknown types:         {len(unknown_types)}")
     print(f"Index written to:       {output_path}")
+    print(f"Report written to:     {report_path}")
     print("=" * 80)
     
     # Clean up extract directory
