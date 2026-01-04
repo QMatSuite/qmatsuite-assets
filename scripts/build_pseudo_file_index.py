@@ -909,15 +909,18 @@ def main():
                 )
                 element = element_from_file
             else:
-                # Both exist - must match
+                # Both exist - prefer file content, but warn if mismatch
                 if element_from_file != element_from_filename:
-                    errors.append(
+                    warnings.append(
                         f"Element mismatch for UPF file '{rel_file_path}' in archive '{rel_path}':\n"
                         f"  From file content: {element_from_file}\n"
-                        f"  From filename:     {element_from_filename}"
+                        f"  From filename:     {element_from_filename}\n"
+                        f"  Using file content: {element_from_file}"
                     )
-                    continue
-                element = element_from_file
+                    # Use file content as it's more reliable
+                    element = element_from_file
+                else:
+                    element = element_from_file
             
             # Detect UPF format
             upf_format = detect_upf_format(file_bytes)

@@ -1,39 +1,40 @@
 # Pseudopotential Classification Report
 
-Generated: 2025-12-31T04:02:54.934350Z
+Generated: 2026-01-04T18:29:53.839046Z
 
 ## Summary
 
-- Total unique files: 1016
-- Total occurrences: 1523
+- Total unique files: 3083
+- Total occurrences: 3623
 
 ## Pseudopotential Type Distribution
 
-- **NC**: 561 files
-- **PAW**: 338 files
+- **NC**: 1046 files
+- **PAW**: 1051 files
 - **UNKNOWN**: 1 files
-- **USPP**: 116 files
+- **USPP**: 985 files
 
 ## Relativistic Treatment Distribution
 
-- **full_rel**: 212 files
-- **nonrel**: 37 files
-- **scalar_rel**: 767 files
+- **full_rel**: 986 files
+- **nonrel**: 260 files
+- **scalar_rel**: 1837 files
 
 ## Functional Distribution
 
-- Files with functional_raw: 900 / 1016
-- **lda**: 289 files
-- **pbe**: 398 files
-- **pbesol**: 213 files
+- Files with functional_raw: 2807 / 3083
+- **lda**: 498 files
+- **pbe**: 1318 files
+- **pbesol**: 427 files
+- **unknown**: 564 files
 
 ## Metadata Coverage
 
-- Z valence present: 900 / 1016 (88.6%)
-- Functional raw present: 900 / 1016 (88.6%)
-- Cutoff WFC normal present: 910 / 1016 (89.6%)
-- Cutoff rho normal present: 126 / 1016 (12.4%)
-- Has GIPAW flag: 872 / 1016 (85.8%)
+- Z valence present: 2807 / 3083 (91.0%)
+- Functional raw present: 2807 / 3083 (91.0%)
+- Cutoff WFC normal present: 877 / 3083 (28.4%)
+- Cutoff rho normal present: 93 / 3083 (3.0%)
+- Has GIPAW flag: 1767 / 3083 (57.3%)
 
 ## Unknown Type Cases
 

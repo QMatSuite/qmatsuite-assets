@@ -1,0 +1,8 @@
+
+================================================================================
+ERRORS FOUND:
+================================================================================
+Element mismatch for UPF file 'La.pz-sp-hgh.UPF' in archive 'pseudo_seed/hartwigesen-goedecker-hutter-pp.tar.gz':
+  From file content: Lu
+  From filename:     La
+================================================================================
